@@ -1,5 +1,5 @@
 {
-  "name": "samlify",
+  "name": "@slc3/samlify",
   "version": "2.3.7",
   "description": "High-level API for Single Sign On (SAML 2.0)",
   "main": "build/index.js",
@@ -27,7 +27,7 @@
   ],
   "author": "tngan",
   "repository": {
-    "url": "https://github.com/tngan/samlify",
+    "url": "https://github.com/SLC3/samlify",
     "type": "git"
   },
   "license": "MIT",
