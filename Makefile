@@ -26,7 +26,7 @@ ifeq ($(SAML_VALIDATOR), javac)
 
 else ifeq ($(SAML_VALIDATOR), libxml)
 	@echo "Installing libxml-xsd ...";
-	npm install libxml-xsd
+	npm install @slc3/libxml-xsd
 
 else ifeq ($(SAML_VALIDATOR), xmllint)
 	@echo "Installing node-xmllint ...";

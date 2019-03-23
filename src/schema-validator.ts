@@ -3,7 +3,7 @@ import * as path from 'path';
 
 enum SchemaValidators {
   JAVAC = '@authenio/xsd-schema-validator',
-  LIBXML = 'libxml-xsd',
+  LIBXML = '@slc3/libxml-xsd',
   XMLLINT = 'node-xmllint'
 }
 
@@ -81,9 +81,8 @@ const getValidatorModule: GetValidatorModuleSpec = async () => {
     return {
       validate: (xml: string) => {
         return new Promise((resolve, reject) => {
-          // https://github.com/albanm/node-libxml-xsd/issues/11
-          process.chdir(path.resolve(__dirname, '../schemas'));
-          mod.parseFile(path.resolve(xsd), (err, schema) => {
+          const xsdResolved = path.resolve(__dirname, '../schemas', xsd);
+          mod.parseFile(xsdResolved, (err, schema) => {
             if (err) {
               console.error('[ERROR] validateXML', err);
               return reject('ERR_INVALID_XML');
