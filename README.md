@@ -1,4 +1,8 @@
-# samlify &middot; [![Build Status](https://travis-ci.org/tngan/samlify.svg?branch=master)](https://travis-ci.org/tngan/samlify) [![npm version](https://img.shields.io/npm/v/samlify.svg?style=flat)](https://www.npmjs.com/package/samlify) [![Coverage Status](https://img.shields.io/coveralls/tngan/samlify/master.svg)](https://coveralls.io/github/tngan/samlify?branch=master)
+# samlify &middot; 
+[![Build Status](https://travis-ci.org/tngan/samlify.svg?branch=master)](https://travis-ci.org/tngan/samlify)
+[![npm version](https://img.shields.io/npm/v/samlify.svg?style=flat)](https://www.npmjs.com/package/samlify)
+[![Coverage Status](https://img.shields.io/coveralls/tngan/samlify/master.svg)](https://coveralls.io/github/tngan/samlify?branch=master) 
+[![Join the community on Spectrum](https://withspectrum.github.io/badge/badge.svg)](https://spectrum.chat/samlify)
 
 Highly configuarable Node.js SAML 2.0 library for Single Sign On 
 
@@ -14,19 +18,22 @@ Welcome all PRs for maintaining this project, or provide a link to the repositor
 ### Installation
 To install the stable version
 
-For those using Windows, `windows-build-tools` should be installed globally before installing samlify.
-```bash
-yarn global add windows-build-tools
+Starting from v2.5, schema validation becomes selectable and optional, we restrict to apply it in your production environment, you can only ignore schema validation in development mode. When you install samlify in your current project, please assign the environment variable `SAML_VALIDATOR` to either `javac`, `xmllint` or `libxml`.
+
+```console
+$ SAML_VALIDATOR=javac yarn add samlify
 ```
 
-```bash
-$ yarn add samlify
+For those using Windows, `windows-build-tools` should be installed globally before installing samlify if you are using `libxml` validator.
+
+```console
+$ yarn global add windows-build-tools
 ```
 
 ### Development
 This project is now developed using TypeScript, also support Yarn which is a new package manager.
 
-```bash
+```console
 $ yarn global add typescript
 $ yarn
 ```
@@ -37,12 +44,9 @@ const saml = require('samlify');
 ```
 See full documentation [here](https://samlify.js.org/)
 
-### Examples (In progress)
+### Example
 
-[samlify-sp](https://github.com/passify/samlify-sp) Service provider example written with Next.js
-
-[samlify-idp](https://github.com/passify/samlify-idp) Identity provider example written with Next.js
-
+[react-samlify](https://github.com/passify/react-samlify) SP example powered by React, TypeScript and Webpack
 
 ### Talks
 

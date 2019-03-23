@@ -7,8 +7,7 @@ import Metadata, { MetadataInterface } from './metadata';
 import { MetadataIdpOptions, MetadataIdpConstructor } from './types';
 import { namespace } from './urn';
 import libsaml from './libsaml';
-import { isString, isUndefined } from 'lodash';
-import { isNonEmptyArray } from './utility';
+import { isNonEmptyArray, isString } from './utility';
 import * as xml from 'xml';
 
 export interface IdpMetadataInterface extends MetadataInterface {
@@ -76,7 +75,7 @@ export class IdpMetadata extends Metadata {
           IDPSSODescriptor.push({ SingleSignOnService: [{ _attr: attr }] });
         });
       } else {
-        throw new Error('Missing endpoint of SingleSignOnService');
+        throw new Error('ERR_IDP_METADATA_MISSING_SINGLE_SIGN_ON_SERVICE');
       }
 
       if (isNonEmptyArray(singleLogoutService)) {
@@ -108,12 +107,16 @@ export class IdpMetadata extends Metadata {
 
     super(meta as string | Buffer, [
       {
-        localName: 'IDPSSODescriptor',
+        key: 'wantAuthnRequestsSigned',
+        localPath: ['EntityDescriptor', 'IDPSSODescriptor'],
         attributes: ['WantAuthnRequestsSigned'],
       },
       {
-        localName: { tag: 'SingleSignOnService', key: 'Binding' },
-        attributeTag: 'Location',
+        key: 'singleSignOnService',
+        localPath: ['EntityDescriptor', 'IDPSSODescriptor', 'SingleSignOnService'],
+        index: ['Binding'],
+        attributePath: [],
+        attributes: ['Location']
       },
     ]);
 
@@ -124,8 +127,8 @@ export class IdpMetadata extends Metadata {
   * @return {boolean} WantAuthnRequestsSigned
   */
   isWantAuthnRequestsSigned(): boolean {
-    const was = this.meta.idpssodescriptor.wantauthnrequestssigned;
-    if (isUndefined(was)) {
+    const was = this.meta.wantAuthnRequestsSigned;
+    if (was === undefined) {
       return false;
     }
     return String(was) === 'true';
@@ -139,11 +142,11 @@ export class IdpMetadata extends Metadata {
   getSingleSignOnService(binding: string): string | object {
     if (isString(binding)) {
       const bindName = namespace.binding[binding];
-      const service = this.meta.singlesignonservice.find(obj => obj[bindName]);
+      const service = this.meta.singleSignOnService[bindName];
       if (service) {
-        return service[bindName];
+        return service;
       }
     }
-    return this.meta.singlesignonservice;
+    return this.meta.singleSignOnService;
   }
 }

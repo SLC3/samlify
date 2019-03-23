@@ -4,13 +4,12 @@
 * @desc Binding-level API, declare the functions using POST binding
 */
 
-import { wording, tags, namespace } from './urn';
+import { wording, namespace, StatusCode } from './urn';
 import { BindingContext } from './entity';
 import libsaml from './libsaml';
-import utility from './utility';
-import { get } from 'lodash';
+import utility, { get } from './utility';
+import { LogoutResponseTemplate } from './libsaml';
 
-const xmlTag = tags.xmlTag;
 const binding = wording.binding;
 
 /**
@@ -29,8 +28,8 @@ function base64LoginRequest(referenceTagXPath: string, entity: any, customTagRep
     let rawSamlRequest: string;
     if (spSetting.loginRequestTemplate) {
       const info = customTagReplacement(spSetting.loginRequestTemplate.context);
-      id = get<BindingContext, keyof BindingContext>(info, 'id');
-      rawSamlRequest = get<BindingContext, keyof BindingContext>(info, 'context');
+      id = get(info, 'id', null);
+      rawSamlRequest = get(info, 'context', null);
     } else {
       id = spSetting.generateID();
       rawSamlRequest = libsaml.replaceTagsByValue(libsaml.defaultLoginRequestTemplate.context, {
@@ -41,11 +40,11 @@ function base64LoginRequest(referenceTagXPath: string, entity: any, customTagRep
         AssertionConsumerServiceURL: metadata.sp.getAssertionConsumerService(binding.post),
         EntityID: metadata.sp.getEntityID(),
         AllowCreate: spSetting.allowCreate,
-        NameIDFormat: namespace.format[spSetting.logoutNameIDFormat] || namespace.format.emailAddress,
+        NameIDFormat: namespace.format[spSetting.loginNameIDFormat] || namespace.format.emailAddress,
       } as any);
     }
     if (metadata.idp.isWantAuthnRequestsSigned()) {
-      const { privateKey, privateKeyPass, requestSignatureAlgorithm: signatureAlgorithm } = spSetting;
+      const { privateKey, privateKeyPass, requestSignatureAlgorithm: signatureAlgorithm, transformationAlgorithms } = spSetting;
       return {
         id,
         context: libsaml.constructSAMLSignature({
@@ -53,8 +52,13 @@ function base64LoginRequest(referenceTagXPath: string, entity: any, customTagRep
           privateKey,
           privateKeyPass,
           signatureAlgorithm,
+          transformationAlgorithms,
           rawSamlMessage: rawSamlRequest,
           signingCert: metadata.sp.getX509Certificate('signing'),
+          signatureConfig: spSetting.signatureConfig || {
+            prefix: 'ds',
+            location: { reference: "/*[local-name(.)='AuthnRequest']/*[local-name(.)='Issuer']", action: 'after' },
+          }
         }),
       };
     }
@@ -64,7 +68,7 @@ function base64LoginRequest(referenceTagXPath: string, entity: any, customTagRep
       context: utility.base64Encode(rawSamlRequest),
     };
   }
-  throw new Error('missing declaration of metadata');
+  throw new Error('ERR_GENERATE_POST_LOGIN_REQUEST_MISSING_METADATA');
 }
 /**
 * @desc Generate a base64 encoded login response
@@ -102,23 +106,23 @@ async function base64LoginResponse(requestInfo: any = {}, entity: any, user: any
       Issuer: metadata.idp.getEntityID(),
       IssueInstant: now,
       AssertionConsumerServiceURL: acl,
-      StatusCode: namespace.statusCode.success,
+      StatusCode: StatusCode.Success,
       // can be customized
       ConditionsNotBefore: now,
       ConditionsNotOnOrAfter: fiveMinutesLater,
       SubjectConfirmationDataNotOnOrAfter: fiveMinutesLater,
       NameIDFormat: namespace.format[idpSetting.logoutNameIDFormat] || namespace.format.emailAddress,
       NameID: user.email || '',
-      InResponseTo: get(requestInfo, 'extract.authnrequest.id') || '',
+      InResponseTo: get(requestInfo, 'extract.request.id', ''),
       AuthnStatement: '',
       AttributeStatement: '',
     };
     if (idpSetting.loginResponseTemplate) {
       const template = customTagReplacement(idpSetting.loginResponseTemplate.context);
-      rawSamlResponse = get<BindingContext, keyof BindingContext>(template, 'context');
+      rawSamlResponse = get(template, 'context', null);
     } else {
       if (requestInfo !== null) {
-        tvalue.InResponseTo = requestInfo.extract.authnrequest.id;
+        tvalue.InResponseTo = requestInfo.extract.request.id;
       }
       rawSamlResponse = libsaml.replaceTagsByValue(libsaml.defaultLoginResponseTemplate.context, tvalue);
     }
@@ -130,34 +134,41 @@ async function base64LoginResponse(requestInfo: any = {}, entity: any, user: any
       signingCert: metadata.idp.getX509Certificate('signing'),
       isBase64Output: false,
     };
+    // step: sign assertion ? -> encrypted ? -> sign message ?
+    if (metadata.sp.isWantAssertionsSigned()) {
+      // console.debug('sp wants assertion signed');
+      rawSamlResponse = libsaml.constructSAMLSignature({
+        ...config,
+        rawSamlMessage: rawSamlResponse,
+        referenceTagXPath: "/*[local-name(.)='Response']/*[local-name(.)='Assertion']", 
+        signatureConfig: {
+          prefix: 'ds',
+          location: { reference: "/*[local-name(.)='Response']/*[local-name(.)='Assertion']/*[local-name(.)='Issuer']", action: 'after' },
+        },
+      });
+    }
+
+    // console.debug('after assertion signed', rawSamlResponse);
 
     // SAML response must be signed sign message first, then encrypt
     if (!encryptThenSign && (spSetting.wantMessageSigned || !metadata.sp.isWantAssertionsSigned())) {
+      // console.debug('sign then encrypt and sign entire message');
       rawSamlResponse = libsaml.constructSAMLSignature({
         ...config,
         rawSamlMessage: rawSamlResponse,
         isMessageSigned: true,
+        transformationAlgorithms: spSetting.transformationAlgorithms,
         signatureConfig: spSetting.signatureConfig || {
           prefix: 'ds',
-          location: { reference: '/samlp:Response/saml:Issuer', action: 'after' },
+          location: { reference: "/*[local-name(.)='Response']/*[local-name(.)='Issuer']", action: 'after' },
         },
       });
     }
 
-    // step: sign assertion ? -> encrypted ? -> sign message ?
-    if (metadata.sp.isWantAssertionsSigned()) {
-      rawSamlResponse = libsaml.constructSAMLSignature({
-        ...config,
-        rawSamlMessage: rawSamlResponse,
-        referenceTagXPath: '/samlp:Response/saml:Assertion', // libsaml.createXPath('Assertion'),
-        signatureConfig: {
-          prefix: 'ds',
-          location: { reference: '/samlp:Response/saml:Assertion/saml:Issuer', action: 'after' },
-        },
-      });
-    }
+    // console.debug('after message signed', rawSamlResponse);
 
     if (idpSetting.isAssertionEncrypted) {
+      // console.debug('idp is configured to do encryption');
       const context = await libsaml.encryptAssertion(entity.idp, entity.sp, rawSamlResponse);
       if (encryptThenSign) {
         //need to decode it
@@ -173,9 +184,10 @@ async function base64LoginResponse(requestInfo: any = {}, entity: any, user: any
         ...config,
         rawSamlMessage: rawSamlResponse,
         isMessageSigned: true,
+        transformationAlgorithms: spSetting.transformationAlgorithms,
         signatureConfig: spSetting.signatureConfig || {
           prefix: 'ds',
-          location: { reference: '/samlp:Response/saml:Issuer', action: 'after' },
+          location: { reference: "/*[local-name(.)='Response']/*[local-name(.)='Issuer']", action: 'after' },
         },
       });
     }
@@ -186,7 +198,7 @@ async function base64LoginResponse(requestInfo: any = {}, entity: any, user: any
     });
 
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_POST_LOGIN_RESPONSE_MISSING_METADATA');
 }
 /**
 * @desc Generate a base64 encoded logout request
@@ -204,8 +216,8 @@ function base64LogoutRequest(user, referenceTagXPath, entity, customTagReplaceme
     let rawSamlRequest: string;
     if (initSetting.logoutRequestTemplate) {
       const template = customTagReplacement(initSetting.logoutRequestTemplate.context);
-      id = get<BindingContext, keyof BindingContext>(template, 'id');
-      rawSamlRequest = get<BindingContext, keyof BindingContext>(template, 'context');
+      id = get(template, 'id', null);
+      rawSamlRequest = get(template, 'context', null);
     } else {
       id = initSetting.generateID();
       const tvalue: any = {
@@ -231,6 +243,10 @@ function base64LogoutRequest(user, referenceTagXPath, entity, customTagReplaceme
           signatureAlgorithm,
           rawSamlMessage: rawSamlRequest,
           signingCert: metadata.init.getX509Certificate('signing'),
+          signatureConfig: initSetting.signatureConfig || {
+            prefix: 'ds',
+            location: { reference: "/*[local-name(.)='LogoutRequest']/*[local-name(.)='Issuer']", action: 'after' },
+          }
         }),
       };
     }
@@ -239,7 +255,7 @@ function base64LogoutRequest(user, referenceTagXPath, entity, customTagReplaceme
       context: utility.base64Encode(rawSamlRequest),
     };
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_POST_LOGOUT_REQUEST_MISSING_METADATA');
 }
 /**
 * @desc Generate a base64 encoded logout response
@@ -269,24 +285,30 @@ function base64LogoutResponse(requestInfo: any, entity: any, customTagReplacemen
         EntityID: metadata.init.getEntityID(),
         Issuer: metadata.init.getEntityID(),
         IssueInstant: new Date().toISOString(),
-        StatusCode: namespace.statusCode.success,
+        StatusCode: StatusCode.Success,
+        InResponseTo: get(requestInfo, 'extract.request.id', null)
       };
-      if (requestInfo && requestInfo.extract && requestInfo.extract.logoutrequest) {
-        tvalue.InResponseTo = requestInfo.extract.logoutrequest.id;
-      }
       rawSamlResponse = libsaml.replaceTagsByValue(libsaml.defaultLogoutResponseTemplate.context, tvalue);
     }
     if (entity.target.entitySetting.wantLogoutResponseSigned) {
-      const { privateKey, privateKeyPass, requestSignatureAlgorithm: signatureAlgorithm } = initSetting;
+      const { privateKey, privateKeyPass, requestSignatureAlgorithm: signatureAlgorithm, transformationAlgorithms } = initSetting;
       return {
         id,
         context: libsaml.constructSAMLSignature({
-          referenceTagXPath: libsaml.createXPath('Issuer'),
+          isMessageSigned: true,
+          transformationAlgorithms: transformationAlgorithms,
           privateKey,
           privateKeyPass,
           signatureAlgorithm,
           rawSamlMessage: rawSamlResponse,
           signingCert: metadata.init.getX509Certificate('signing'),
+          signatureConfig: {
+            prefix: 'ds',
+            location: {
+              reference: "/*[local-name(.)='LogoutResponse']/*[local-name(.)='Issuer']",
+              action: 'after'
+            }
+          } 
         }),
       };
     }
@@ -295,7 +317,7 @@ function base64LogoutResponse(requestInfo: any, entity: any, customTagReplacemen
       context: utility.base64Encode(rawSamlResponse),
     };
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_POST_LOGOUT_RESPONSE_MISSING_METADATA');
 }
 
 const postBinding = {

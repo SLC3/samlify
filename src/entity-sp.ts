@@ -3,22 +3,20 @@
 * @author tngan
 * @desc  Declares the actions taken by service provider
 */
-import Entity, { BindingContext, PostBindingContext, ESamlHttpRequest, ParseResult } from './entity';
+import Entity, {
+  BindingContext,
+  PostBindingContext,
+  ESamlHttpRequest,
+} from './entity';
 import {
   IdentityProviderConstructor as IdentityProvider,
   ServiceProviderMetadata,
   ServiceProviderSettings,
 } from './types';
-import libsaml from './libsaml';
-import utility from './utility';
-import { wording, namespace, tags } from './urn';
+import { namespace } from './urn';
 import redirectBinding from './binding-redirect';
 import postBinding from './binding-post';
-import * as xml from 'xml';
-
-const bindDict = wording.binding;
-const xmlTag = tags.xmlTag;
-const metaWord = wording.metadata;
+import { flow, FlowResult } from './flow';
 
 /*
  * @desc interface function
@@ -29,8 +27,8 @@ export default function(props: ServiceProviderSettings) {
 
 /**
 * @desc Service provider can be configured using either metadata importing or spSetting
-* @param  {object} spSetting
-* @param  {string} meta
+* @param  {object} spSettingimport { FlowResult } from '../types/src/flow.d';
+
 */
 export class ServiceProvider extends Entity {
   entityMeta: ServiceProviderMetadata;
@@ -38,7 +36,6 @@ export class ServiceProvider extends Entity {
   /**
   * @desc  Inherited from Entity
   * @param {object} spSetting    setting of service provider
-  * @param {string} meta		     metadata
   */
   constructor(spSetting: ServiceProviderSettings) {
     const entitySetting = Object.assign({
@@ -63,7 +60,7 @@ export class ServiceProvider extends Entity {
     const nsBinding = namespace.binding;
     const protocol = nsBinding[binding];
     if (this.entityMeta.isAuthnRequestSigned() !== idp.entityMeta.isWantAuthnRequestsSigned()) {
-      throw new Error('metadata conflict - sp isAuthnRequestSigned is not equal to idp isWantAuthnRequestsSigned');
+      throw new Error('ERR_METADATA_CONFLICT_REQUEST_SIGNED_FLAG');
     }
 
     if (protocol === nsBinding.redirect) {
@@ -71,7 +68,7 @@ export class ServiceProvider extends Entity {
     }
 
     if (protocol === nsBinding.post) {
-      const context = postBinding.base64LoginRequest(libsaml.createXPath('Issuer'), { idp, sp: this }, customTagReplacement);
+      const context = postBinding.base64LoginRequest("/*[local-name(.)='AuthnRequest']", { idp, sp: this }, customTagReplacement);
       return {
         ...context,
         relayState: this.entitySetting.relayState,
@@ -80,7 +77,7 @@ export class ServiceProvider extends Entity {
       };
     }
     // Will support artifact in the next release
-    throw new Error('The binding is not support');
+    throw new Error('ERR_SP_LOGIN_REQUEST_UNDEFINED_BINDING');
   }
 
   /**
@@ -89,33 +86,17 @@ export class ServiceProvider extends Entity {
   * @param  {string}   binding                   protocol binding
   * @param  {request}   req                      request
   */
-  public parseLoginResponse(idp, binding, req: ESamlHttpRequest) {
-    return this.genericParser({
-      parserFormat: [{
-        localName: 'StatusCode',
-        attributes: ['Value'],
-      }, {
-        localName: 'Conditions',
-        attributes: ['NotBefore', 'NotOnOrAfter'],
-      }, 'Audience', 'Issuer', 'NameID', {
-        localName: 'Signature',
-        extractEntireBody: true,
-      }, {
-        localName: {
-          tag: 'Attribute',
-          key: 'Name',
-        },
-        valueTag: 'AttributeValue',
-      }, {
-        localName: 'AuthnStatement',
-        attributes: ['SessionIndex'],
-      }],
+  public parseLoginResponse(idp, binding, request: ESamlHttpRequest) {
+    const self = this;
+    return flow({
       from: idp,
+      self: self,
       checkSignature: true, // saml response must have signature
-      supportBindings: ['post'],
       parserType: 'SAMLResponse',
       type: 'login',
-    }, binding, req);
+      binding: binding,
+      request: request
+    });
   }
 
 }

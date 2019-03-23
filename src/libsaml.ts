@@ -5,23 +5,20 @@
 */
 
 import { DOMParser } from 'xmldom';
-import { pki } from 'node-forge';
-import utility from './utility';
-import { tags, algorithms, wording, namespace } from './urn';
-import xpath, { select } from 'xpath';
-import * as camel from 'camelcase';
+import utility, { flattenDeep, isString } from './utility';
+import { algorithms, wording, namespace } from './urn';
+import { select } from 'xpath';
 import { MetadataInterface } from './metadata';
-import { isString, isObject, isUndefined, includes, flattenDeep } from 'lodash';
 import * as nrsa from 'node-rsa';
-import crpyto, { SignedXml, FileKeyInfo } from 'xml-crypto';
-import * as xmlenc from 'xml-encryption';
-import * as xsd from 'libxml-xsd';
-import * as path from 'path';
+import { SignedXml, FileKeyInfo } from 'xml-crypto';
+import * as xmlenc from '@authenio/xml-encryption';
+import { extract } from './extractor';
+import { getValidatorModule } from './schema-validator';
+import camelCase from 'camelcase';
 
 const signatureAlgorithms = algorithms.signature;
 const digestAlgorithms = algorithms.digest;
 const certUse = wording.certUse;
-const requestTags = tags.request;
 const urlParams = wording.urlParams;
 const dom = DOMParser;
 
@@ -35,6 +32,7 @@ export interface SignatureConstructor {
   isBase64Output?: boolean;
   signatureConfig?: any;
   isMessageSigned?: boolean;
+  transformationAlgorithms?: string[];
 }
 
 export interface SignatureVerifierOptions {
@@ -73,29 +71,26 @@ export interface LogoutResponseTemplate extends BaseSamlTemplate { }
 
 export type KeyUse = 'signing' | 'encryption';
 
+export interface KeyComponent {
+  [key: string]: any;
+}
+
 export interface LibSamlInterface {
   getQueryParamByType: (type: string) => string;
   createXPath: (local, isExtractAll?: boolean) => string;
   replaceTagsByValue: (rawXML: string, tagValues: any) => string;
   attributeStatementBuilder: (attributes: LoginResponseAttribute[]) => string;
   constructSAMLSignature: (opts: SignatureConstructor) => string;
-  verifySignature: (xml: string, opts) => boolean;
-  extractor: (xmlString: string, fields) => ExtractorResult;
+  verifySignature: (xml: string, opts) => [boolean, any];
   createKeySection: (use: KeyUse, cert: string | Buffer) => {};
   constructMessageSignature: (octetString: string, key: string, passphrase?: string, isBase64?: boolean, signingAlgorithm?: string) => string;
   verifyMessageSignature: (metadata, octetString: string, signature: string | Buffer, verifyAlgorithm?: string) => boolean;
   getKeyInfo: (x509Certificate: string, signatureConfig?: any) => void;
   encryptAssertion: (sourceEntity, targetEntity, entireXML: string) => Promise<string>;
-  decryptAssertion: (here, entireXML: string) => Promise<string>;
+  decryptAssertion: (here, entireXML: string) => Promise<[string, any]>;
 
   getSigningScheme: (sigAlg: string) => string | null;
   getDigestMethod: (sigAlg: string) => string | null;
-  getAttribute: (xmlDoc, localName: string, attribute: string) => string;
-  getAttributes: (xmlDoc, localName: string, attributes: string[]) => string | [string];
-  getInnerTextWithOuterKey: (xmlDoc, localName: string, localNameKey: string, valueTag: string) => any;
-  getAttributeKey: (xmlDoc, localName: string, localNameKey: string, attributeTag: string) => any;
-  getEntireBody: (xmlDoc, localName: string, isOutputString?: boolean) => any;
-  getInnerText: (xmlDoc, localName: string) => string | [string];
 
   nrsaAliasMapping: any;
   defaultLoginRequestTemplate: LoginRequestTemplate;
@@ -105,18 +100,19 @@ export interface LibSamlInterface {
 }
 
 const libSaml = () => {
+
   /**
   * @desc helper function to get back the query param for redirect binding for SLO/SSO
   * @type {string}
   */
   function getQueryParamByType(type: string) {
     if ([urlParams.logoutRequest, urlParams.samlRequest].indexOf(type) !== -1) {
-      return urlParams.samlRequest;
+      return 'SAMLRequest';
     }
     if ([urlParams.logoutResponse, urlParams.samlResponse].indexOf(type) !== -1) {
-      return urlParams.samlResponse;
+      return 'SAMLResponse';
     }
-    throw new Error('undefined parserType');
+    throw new Error('ERR_UNDEFINED_QUERY_PARAMS');
   }
   /**
    *
@@ -163,7 +159,7 @@ const libSaml = () => {
   */
   function getSigningScheme(sigAlg?: string): string | null {
     const algAlias = nrsaAliasMapping[sigAlg];
-    if (!isUndefined(algAlias)) {
+    if (!(algAlias === undefined)) {
       return algAlias;
     }
     return nrsaAliasMapping[signatureAlgorithms.RSA_SHA1]; // default value
@@ -176,166 +172,11 @@ const libSaml = () => {
   */
   function getDigestMethod(sigAlg: string): string | null {
     const digestAlg = digestAlgorithms[sigAlg];
-    if (!isUndefined(digestAlg)) {
+    if (!(digestAlg === undefined)) {
       return digestAlg;
     }
     return null; // default value
   }
-  /**
-  * @private
-  * @desc Helper function used by another private function: getAttributes
-  * @param  {xml} xmlDoc          used xml document
-  * @param  {string} localName    tag name without prefix
-  * @param  {string} attribute    name of attribute
-  * @return {string} attribute value
-  */
-  function getAttribute(xmlDoc, localName: string, attribute: string): string {
-    const xpathStr = createXPath({
-      name: localName,
-      attr: attribute,
-    });
-    const selection = select(xpathStr, xmlDoc);
-
-    if (selection.length !== 1) {
-      return undefined;
-    } else {
-      return selection[0].nodeValue.toString();
-    }
-  }
-  /**
-  * @private
-  * @desc Get the attibutes
-  * @param  {xml} xmlDoc              used xml document
-  * @param  {string} localName        tag name without prefix
-  * @param  {[string]} attributes     array consists of name of attributes
-  * @return {string/array}
-  */
-  function getAttributes(xmlDoc, localName: string, attributes: string[]) {
-    const xpathStr = createXPath(localName);
-    const selection = select(xpathStr, xmlDoc);
-    const data = [];
-    if (selection.length === 0) {
-      return undefined;
-    }
-    selection.forEach(s => {
-      const dat = {};
-      const doc = new dom().parseFromString(String(s));
-      attributes.forEach(attr => {
-        dat[attr.toLowerCase()] = getAttribute(doc, localName, attr);
-      });
-      data.push(dat);
-    });
-    return data.length === 1 ? data[0] : data;
-  }
-  /**
-  * @private
-  * @desc Helper function used to return result with complex format
-  * @param  {xml} xmlDoc              used xml document
-  * @param  {string} localName        tag name without prefix
-  * @param  {string} localNameKey     key associated with tag name
-  * @param  {string} valueTag         tag of the value
-  */
-  function getInnerTextWithOuterKey(xmlDoc, localName: string, localNameKey: string, valueTag: string) {
-    const xpathStr = createXPath(localName);
-    const selection = select(xpathStr, xmlDoc);
-    const obj = {};
-
-    selection.forEach(_s => {
-      const xd = new dom().parseFromString(_s.toString());
-      const key = select("//*[local-name(.)='" + localName + "']/@" + localNameKey, xd);
-      const value = select("//*[local-name(.)='" + valueTag + "']/text()", xd);
-      let res;
-
-      if (key && key.length === 1 && utility.isNonEmptyArray(value)) {
-        if (value.length === 1) {
-          res = value[0].nodeValue.toString();
-        } else {
-          const dat = [];
-          value.forEach(v => dat.push(String(v.nodeValue)));
-          res = dat;
-        }
-
-        const objKey = key[0].nodeValue.toString();
-
-        if (obj[objKey]) {
-          obj[objKey] = [obj[objKey]].concat(res);
-        } else {
-          obj[objKey] = res;
-        }
-
-      } else {
-        // console.warn('Multiple keys or null value is found');
-      }
-    });
-    return Object.keys(obj).length === 0 ? undefined : obj;
-  }
-  /**
-  * @private
-  * @desc  Get the attribute according to the key
-  * @param  {string} localName            tag name without prefix
-  * @param  {string} localNameKey         key associated with tag name
-  * @param  {string} attributeTag         tag of the attribute
-  */
-  function getAttributeKey(xmlDoc, localName: string, localNameKey: string, attributeTag: string) {
-    const xpathStr = createXPath(localName);
-    const selection = select(xpathStr, xmlDoc);
-    const data = [];
-
-    selection.forEach(_s => {
-      const xd = new dom().parseFromString(_s.toString());
-      const key = select("//*[local-name(.)='" + localName + "']/@" + localNameKey, xd);
-      const value = select("//*[local-name(.)='" + localName + "']/@" + attributeTag, xd);
-
-      if (value && value.length === 1 && key && key.length === 1) {
-        const obj = {};
-        obj[key[0].nodeValue.toString()] = value[0].nodeValue.toString();
-        data.push(obj);
-      } else {
-        //console.warn('Multiple keys or null value is found');
-      }
-    });
-    return data.length === 0 ? undefined : data;
-  }
-  /**
-  * @private
-  * @desc Get the entire body according to the XPath
-  * @param  {xml} xmlDoc              used xml document
-  * @param  {string} localName        tag name without prefix
-  * @param  {boolean} isOutputString  output is string format (default is true)
-  * @return {string/array}
-  */
-  function getEntireBody(xmlDoc, localName: string, isOutputString?: boolean) {
-    const xpathStr = createXPath(localName);
-    const selection = select(xpathStr, xmlDoc);
-    if (selection.length === 0) {
-      return undefined;
-    }
-    const data = [];
-    selection.forEach(_s => {
-      data.push(utility.convertToString(_s, isOutputString !== false));
-    });
-    return data.length === 1 ? data[0] : data;
-  }
-  /**
-  * @private
-  * @desc  Get the inner xml according to the XPath
-  * @param  {xml} xmlDoc          used xml document
-  * @param  {string} localName    tag name without prefix
-  * @return {string/array} value
-  */
-  function getInnerText(xmlDoc, localName: string) {
-    const xpathStr = createXPath(localName, true);
-    const selection = select(xpathStr, xmlDoc);
-    if (selection.length === 0) {
-      return undefined;
-    }
-    const data = [];
-    selection.forEach(_s => {
-      data.push(String(_s.nodeValue).trim().replace(/\r?\n/g, ''));
-    });
-    return data.length === 1 ? data[0] : data;
-  }
-
   /**
   * @public
   * @desc Create XPath
@@ -344,10 +185,10 @@ const libSaml = () => {
   * @return {string} xpath
   */
   function createXPath(local, isExtractAll?: boolean): string {
-    if (isObject(local)) {
-      return "//*[local-name(.)='" + local.name + "']/@" + local.attr;
+    if (isString(local)) {
+      return isExtractAll === true ? "//*[local-name(.)='" + local + "']/text()" : "//*[local-name(.)='" + local + "']";
     }
-    return isExtractAll === true ? "//*[local-name(.)='" + local + "']/text()" : "//*[local-name(.)='" + local + "']";
+    return "//*[local-name(.)='" + local.name + "']/@" + local.attr;
   }
 
   /**
@@ -358,7 +199,7 @@ const libSaml = () => {
    * @return {string}
    */
   function tagging(prefix: string, content: string): string {
-    const camelContent = camel(content);
+    const camelContent = camelCase(content);
     return prefix + camelContent.charAt(0).toUpperCase() + camelContent.slice(1);
   }
 
@@ -402,6 +243,7 @@ const libSaml = () => {
     * @param  {string} passphrase           passphrase of the private key [optional]
     * @param  {string|buffer} signingCert   signing certificate
     * @param  {string} signatureAlgorithm   signature algorithm
+    * @param  {string[]} transformationAlgorithms   canonicalization and transformation Algorithms
     * @return {string} base64 encoded string
     */
     constructSAMLSignature(opts: SignatureConstructor) {
@@ -411,6 +253,10 @@ const libSaml = () => {
         privateKey,
         privateKeyPass,
         signatureAlgorithm = signatureAlgorithms.RSA_SHA256,
+        transformationAlgorithms = [
+          'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+          'http://www.w3.org/2001/10/xml-exc-c14n#',
+        ],
         signingCert,
         signatureConfig,
         isBase64Output = true,
@@ -419,16 +265,17 @@ const libSaml = () => {
       const sig = new SignedXml();
       // Add assertion sections as reference
       if (referenceTagXPath) {
-        sig.addReference(referenceTagXPath, null, getDigestMethod(signatureAlgorithm));
+        sig.addReference(
+          referenceTagXPath,
+          opts.transformationAlgorithms,
+          getDigestMethod(signatureAlgorithm)
+        );
       }
       if (isMessageSigned) {
         sig.addReference(
           // reference to the root node
           '/*',
-          [
-            'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
-            'http://www.w3.org/2001/10/xml-exc-c14n#',
-          ],
+          transformationAlgorithms,
           getDigestMethod(signatureAlgorithm),
           '',
           '',
@@ -439,7 +286,6 @@ const libSaml = () => {
       sig.signatureAlgorithm = signatureAlgorithm;
       sig.keyInfoProvider = new this.getKeyInfo(signingCert, signatureConfig);
       sig.signingKey = utility.readPrivateKey(privateKey, privateKeyPass, true);
-
       if (signatureConfig) {
         sig.computeSignature(rawSamlMessage, signatureConfig);
       } else {
@@ -455,88 +301,133 @@ const libSaml = () => {
     * @return {boolean} verification result
     */
     verifySignature(xml: string, opts: SignatureVerifierOptions) {
+
       const doc = new dom().parseFromString(xml);
-      const selection = select("//*[local-name(.)='Signature']", doc);
+      // In order to avoid the wrapping attack, we have changed to use absolute xpath instead of naively fetching the signature element
+      // message signature (logout response / saml response)
+      const messageSignatureXpath = "/*[contains(local-name(), 'Response') or contains(local-name(), 'Request')]/*[local-name(.)='Signature']";
+      // assertion signature (logout response / saml response)
+      const assertionSignatureXpath = "/*[contains(local-name(), 'Response') or contains(local-name(), 'Request')]/*[local-name(.)='Assertion']/*[local-name(.)='Signature']";
+      // check if there is a potential malicious wrapping signature
+      const wrappingElementsXPath = "/*[contains(local-name(), 'Response')]/*[local-name(.)='Assertion']/*[local-name(.)='Subject']/*[local-name(.)='SubjectConfirmation']/*[local-name(.)='SubjectConfirmationData']//*[local-name(.)='Assertion' or local-name(.)='Signature']";
+
+      // select the signature node
+      let selection = [];
+      let assertionNode = null;
+      const messageSignatureNode = select(messageSignatureXpath, doc);
+      const assertionSignatureNode = select(assertionSignatureXpath, doc);
+      const wrappingElementNode = select(wrappingElementsXPath, doc);
+
+      selection = selection.concat(messageSignatureNode);
+      selection = selection.concat(assertionSignatureNode);
+
+      // try to catch potential wrapping attack
+      if (wrappingElementNode.length !== 0) {
+        throw new Error('ERR_POTENTIAL_WRAPPING_ATTACK');
+      }
+
       // guarantee to have a signature in saml response
       if (selection.length === 0) {
-        throw new Error('no signature is found in the context');
+        throw new Error('ERR_ZERO_SIGNATURE');
       }
+
       const sig = new SignedXml();
-      let res = true;
-      xml = xml.replace(/<ds:Signature(.*?)>(.*?)<\/(.*?)ds:Signature>/g, '');
-      selection.forEach(s => {
-        let selectedCert = '';
+      let verified = true;
+      // need to refactor later on
+      selection.forEach(signatureNode => {
         sig.signatureAlgorithm = opts.signatureAlgorithm;
         if (opts.keyFile) {
           sig.keyInfoProvider = new FileKeyInfo(opts.keyFile);
         } else if (opts.cert) {
+
+          const certificateNode = select(".//*[local-name(.)='X509Certificate']", signatureNode) as any;
+          
+          // certificate in metadata
           let metadataCert: any = opts.cert.getX509Certificate(certUse.signing);
           if (typeof metadataCert === 'string') {
             metadataCert = [metadataCert];
           } else if (metadataCert instanceof Array) {
             // flattens the nested array of Certificates from each KeyDescriptor
-            metadataCert = flattenDeep(metadataCert);
+            metadataCert = flattenDeep(metadataCert as []);
           }
           metadataCert = metadataCert.map(utility.normalizeCerString);
-          let x509Certificate = select(".//*[local-name(.)='X509Certificate']", s)[0].firstChild.data;
-          x509Certificate = utility.normalizeCerString(x509Certificate);
-          if (includes(metadataCert, x509Certificate)) {
+
+          // use the first 
+          let selectedCert = metadataCert[0];
+          // no certificate node in response
+          if (certificateNode.length !== 0) {
+            const x509CertificateData = certificateNode[0].firstChild.data;
+            const x509Certificate = utility.normalizeCerString(x509CertificateData);
             selectedCert = x509Certificate;
           }
-          if (selectedCert === '') {
-            throw new Error('certificate in document is not matched those specified in metadata');
+
+          if (selectedCert === null) {
+            throw new Error('NO_SELECTED_CERTIFICATE');
+          }
+          if (metadataCert.length >= 1 && !metadataCert.find(cert => cert === selectedCert)) {
+            // keep this restriction for rolling certificate usage
+            // to make sure the response certificate is one of those specified in metadata
+            throw new Error('ERROR_UNMATCH_CERTIFICATE_DECLARATION_IN_METADATA');
           }
           sig.keyInfoProvider = new this.getKeyInfo(selectedCert);
         } else {
-          throw new Error('undefined certificate in \'opts\' object');
+          throw new Error('ERR_UNDEFINED_SIGNATURE_VERIFIER_OPTIONS');
         }
-        sig.loadSignature(s);
-        res = res && sig.checkSignature(xml);
-      });
-      return res;
-    },
-    /**
-    * @desc High-level XML extractor
-    * @param  {string} xmlString
-    * @param  {object} fields
-    */
-    extractor(xmlString: string, fields) {
-      const doc = new dom().parseFromString(xmlString);
-      const meta = {};
-      fields.forEach(field => {
-        let objKey;
-        let res;
-        if (isString(field)) {
-          meta[field.toLowerCase()] = getInnerText(doc, field);
-        } else if (typeof field === 'object') {
-          const localName = field.localName;
-          const extractEntireBody = field.extractEntireBody === true;
-          const attributes = field.attributes || [];
-          const customKey = field.customKey || '';
+        sig.loadSignature(signatureNode);
 
-          if (isString(localName)) {
-            objKey = localName;
-            if (extractEntireBody) {
-              res = getEntireBody(doc, localName);
-            } else {
-              if (attributes.length !== 0) {
-                res = getAttributes(doc, localName, attributes);
-              } else {
-                res = getInnerText(doc, localName);
-              }
-            }
-          } else {
-            objKey = localName.tag;
-            if (field.attributeTag) {
-              res = getAttributeKey(doc, objKey, localName.key, field.attributeTag);
-            } else if (field.valueTag) {
-              res = getInnerTextWithOuterKey(doc, objKey, localName.key, field.valueTag);
-            }
-          }
-          meta[customKey === '' ? objKey.toLowerCase() : customKey] = res;
+        doc.removeChild(signatureNode);
+
+        verified = verified && sig.checkSignature(doc.toString());
+
+        // immediately throw error when any one of the signature is failed to get verified
+        if (!verified) {
+          throw new Error('ERR_FAILED_TO_VERIFY_SIGNATURE');
         }
+
       });
-      return meta as ExtractorResult;
+
+      // response must be signed, either entire document or assertion
+      // default we will take the assertion section under root
+      if (messageSignatureNode.length === 1) {
+        const node = select("/*[contains(local-name(), 'Response') or contains(local-name(), 'Request')]/*[local-name(.)='Assertion']", doc);
+        if (node.length === 1) {
+          assertionNode = node[0].toString();
+        }
+      }
+
+      if (assertionSignatureNode.length === 1) {
+        const verifiedAssertionInfo = extract(assertionSignatureNode[0].toString(), [{
+          key: 'refURI',
+          localPath: ['Signature', 'SignedInfo', 'Reference'],
+          attributes: ['URI']
+        }]);
+        // get the assertion supposed to be the one should be verified
+        const desiredAssertionInfo = extract(doc.toString(), [{
+          key: 'id',
+          localPath: ['~Response', 'Assertion'],
+          attributes: ['ID']
+        }]);
+        // 5.4.2 References
+        // SAML assertions and protocol messages MUST supply a value for the ID attribute on the root element of
+        // the assertion or protocol message being signed. The assertion’s or protocol message's root element may
+        // or may not be the root element of the actual XML document containing the signed assertion or protocol
+        // message (e.g., it might be contained within a SOAP envelope).
+        // Signatures MUST contain a single <ds:Reference> containing a same-document reference to the ID
+        // attribute value of the root element of the assertion or protocol message being signed. For example, if the
+        // ID attribute value is "foo", then the URI attribute in the <ds:Reference> element MUST be "#foo".
+        if (verifiedAssertionInfo.refURI !== `#${desiredAssertionInfo.id}`) {
+          throw new Error('ERR_POTENTIAL_WRAPPING_ATTACK');
+        }
+        const verifiedDoc = extract(doc.toString(), [{
+          key: 'assertion',
+          localPath: ['~Response', 'Assertion'],
+          attributes: [],
+          context: true
+        }]);
+        assertionNode = verifiedDoc.assertion.toString();
+      }
+
+      return [verified, assertionNode];
     },
     /**
     * @desc Helper function to create the key section in metadata (abstraction for signing and encrypt use)
@@ -544,21 +435,26 @@ const libSaml = () => {
     * @param  {string} certString    declares the certificate String
     * @return {object} object used in xml module
     */
-    createKeySection(use: KeyUse, certString: string | Buffer) {
+    createKeySection(use: KeyUse, certString: string | Buffer): KeyComponent {
       return {
-        KeyDescriptor: [{
-          _attr: { use },
-        }, {
-          'ds:KeyInfo': [{
-            _attr: {
-              'xmlns:ds': 'http://www.w3.org/2000/09/xmldsig#',
-            },
-          }, {
-            'ds:X509Data': [{
-              'ds:X509Certificate': utility.normalizeCerString(certString),
-            }],
+        ['KeyDescriptor']: [
+          {
+            _attr: { use },
+          },
+          {
+            ['ds:KeyInfo']: [
+              {
+                _attr: {
+                  'xmlns:ds': 'http://www.w3.org/2000/09/xmldsig#',
+                },
+              },
+              {
+                ['ds:X509Data']: [{
+                  'ds:X509Certificate': utility.normalizeCerString(certString),
+                }],
+              },
+            ],
           }],
-        }],
       };
     },
     /**
@@ -617,45 +513,44 @@ const libSaml = () => {
     encryptAssertion(sourceEntity, targetEntity, xml: string) {
       // Implement encryption after signature if it has
       return new Promise<string>((resolve, reject) => {
-        if (xml) {
-          const sourceEntitySetting = sourceEntity.entitySetting;
-          const targetEntitySetting = targetEntity.entitySetting;
-          const sourceEntityMetadata = sourceEntity.entityMeta;
-          const targetEntityMetadata = targetEntity.entityMeta;
-          const doc = new dom().parseFromString(xml);
-          const assertions = select("//*[local-name(.)='Assertion']", doc);
-          const assertionNode = getEntireBody(new dom().parseFromString(xml), 'Assertion');
-          if (!Array.isArray(assertions)) {
-            throw new Error('undefined assertion is found');
-          }
-          if (assertions.length !== 1) {
-            throw new Error(`undefined number (${assertions.length}) of assertion section`);
-          }
-          // Perform encryption depends on the setting, default is false
-          if (sourceEntitySetting.isAssertionEncrypted) {
-            xmlenc.encrypt(assertions[0].toString(), {
-              // use xml-encryption module
-              rsa_pub: new Buffer(utility.getPublicKeyPemFromCertificate(targetEntityMetadata.getX509Certificate(certUse.encrypt)).replace(/\r?\n|\r/g, '')), // public key from certificate
-              pem: new Buffer('-----BEGIN CERTIFICATE-----' + targetEntityMetadata.getX509Certificate(certUse.encrypt) + '-----END CERTIFICATE-----'),
-              encryptionAlgorithm: sourceEntitySetting.dataEncryptionAlgorithm,
-              keyEncryptionAlgorighm: sourceEntitySetting.keyEncryptionAlgorithm,
-            }, (err, res) => {
-              if (err) {
-                return reject(new Error('exception in encrpytedAssertion ' + err));
-              }
-              if (!res) {
-                return reject(new Error('undefined encrypted assertion'));
-              }
-              const { encryptedAssertion: encAssertionPrefix } = sourceEntitySetting.tagPrefix;
-              const encryptAssertionNode = new dom().parseFromString(`<${encAssertionPrefix}:EncryptedAssertion xmlns:${encAssertionPrefix}="${namespace.names.assertion}">${res}</${encAssertionPrefix}:EncryptedAssertion>`);
-              doc.replaceChild(encryptAssertionNode, assertions[0]);
-              return resolve(utility.base64Encode(doc.toString()));
-            });
-          } else {
-            return resolve(utility.base64Encode(xml)); // No need to do encrpytion
-          }
+
+        if (!xml) {
+          return reject(new Error('ERR_UNDEFINED_ASSERTION'));
+        }
+
+        const sourceEntitySetting = sourceEntity.entitySetting;
+        const targetEntityMetadata = targetEntity.entityMeta;
+        const doc = new dom().parseFromString(xml);
+        const assertions = select("//*[local-name(.)='Assertion']", doc) as Node[];
+        if (!Array.isArray(assertions)) {
+          throw new Error('ERR_NO_ASSERTION');
+        }
+        if (assertions.length !== 1) {
+          throw new Error('ERR_MULTIPLE_ASSERTION');
+        }
+        // Perform encryption depends on the setting, default is false
+        if (sourceEntitySetting.isAssertionEncrypted) {
+          xmlenc.encrypt(assertions[0].toString(), {
+            // use xml-encryption module
+            rsa_pub: new Buffer(utility.getPublicKeyPemFromCertificate(targetEntityMetadata.getX509Certificate(certUse.encrypt)).replace(/\r?\n|\r/g, '')), // public key from certificate
+            pem: new Buffer('-----BEGIN CERTIFICATE-----' + targetEntityMetadata.getX509Certificate(certUse.encrypt) + '-----END CERTIFICATE-----'),
+            encryptionAlgorithm: sourceEntitySetting.dataEncryptionAlgorithm,
+            keyEncryptionAlgorighm: sourceEntitySetting.keyEncryptionAlgorithm,
+          }, (err, res) => {
+            if (err) {
+              console.error(err);
+              return reject(new Error('ERR_EXCEPTION_OF_ASSERTION_ENCRYPTION'));
+            }
+            if (!res) {
+              return reject(new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION'));
+            }
+            const { encryptedAssertion: encAssertionPrefix } = sourceEntitySetting.tagPrefix;
+            const encryptAssertionNode = new dom().parseFromString(`<${encAssertionPrefix}:EncryptedAssertion xmlns:${encAssertionPrefix}="${namespace.names.assertion}">${res}</${encAssertionPrefix}:EncryptedAssertion>`);
+            doc.replaceChild(encryptAssertionNode, assertions[0]);
+            return resolve(utility.base64Encode(doc.toString()));
+          });
         } else {
-          return reject(new Error('empty or undefined xml string during encryption'));
+          return resolve(utility.base64Encode(xml)); // No need to do encrpytion
         }
       });
     },
@@ -668,33 +563,34 @@ const libSaml = () => {
     * @return {function} a promise to get back the entire xml with decrypted assertion
     */
     decryptAssertion(here, entireXML: string) {
-      return new Promise<string>((resolve, reject) => {
+      return new Promise<[string, any]>((resolve, reject) => {
         // Implement decryption first then check the signature
         if (!entireXML) {
-          return reject(new Error('empty or undefined xml string during decryption'));
+          return reject(new Error('ERR_UNDEFINED_ASSERTION'));
         }
         // Perform encryption depends on the setting of where the message is sent, default is false
         const hereSetting = here.entitySetting;
         const xml = new dom().parseFromString(entireXML);
-        const encryptedAssertions = select("//*[local-name(.)='EncryptedAssertion']", xml);
+        const encryptedAssertions = select("/*[contains(local-name(), 'Response')]/*[local-name(.)='EncryptedAssertion']", xml) as Node[];
         if (!Array.isArray(encryptedAssertions)) {
-          throw new Error('undefined encrypted assertion is found');
+          throw new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION');
         }
         if (encryptedAssertions.length !== 1) {
-          throw new Error(`undefined number (${encryptedAssertions.length}) of encrypted assertions section`);
+          throw new Error('ERR_MULTIPLE_ASSERTION');
         }
         return xmlenc.decrypt(encryptedAssertions[0].toString(), {
           key: utility.readPrivateKey(hereSetting.encPrivateKey, hereSetting.encPrivateKeyPass),
         }, (err, res) => {
           if (err) {
-            return reject(new Error('exception in decryptAssertion ' + err));
+            console.error(err);
+            return reject(new Error('ERR_EXCEPTION_OF_ASSERTION_DECRYPTION'));
           }
           if (!res) {
-            return reject(new Error('undefined encrypted assertion'));
+            return reject(new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION'));
           }
           const assertionNode = new dom().parseFromString(res);
           xml.replaceChild(assertionNode, encryptedAssertions[0]);
-          return resolve(xml.toString());
+          return resolve([xml.toString(), res]);
         });
       });
     },
@@ -702,24 +598,18 @@ const libSaml = () => {
      * @desc Check if the xml string is valid and bounded
      */
     async isValidXml(input: string) {
-      return new Promise((resolve, reject) => {
-        // https://github.com/albanm/node-libxml-xsd/issues/11
-        const currentDirectory = path.resolve('');
-        process.chdir(path.resolve(__dirname, '../schemas'));
-        xsd.parseFile(path.resolve('saml-schema-protocol-2.0.xsd'), (err, schema) => {
-          if (err) {
-            return reject(err.message);
-          }
-          schema.validate(input, (techErrors, validationErrors) => {
-            if (techErrors !== null || validationErrors !== null) {
-              return reject(`this is not a valid saml response with errors: ${validationErrors}`);
-            }
-            return resolve(true);
-          });
-        });
-      });
+      try {
+        await mod.validate(input);
+        return Promise.resolve();
+      } catch (e) {
+        throw e;
+      }
     },
   };
 };
+
+// load the validator module before the function runtime
+let mod = null;
+(async () => mod = await getValidatorModule())();
 
 export default libSaml();

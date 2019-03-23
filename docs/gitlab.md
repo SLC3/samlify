@@ -43,7 +43,7 @@ docker run --name gitlab -d \
 
 ### Get fingerprint (This is another way I found)
 
-```bash
+```console
 $ openssl x509 -in ./key/idp/cert.cer -sha1 -noout -fingerprint
 ```
 
@@ -82,7 +82,7 @@ const idp = require('samlify').IdentityProvider({
   },
   signatureConfig: {
     prefix: 'ds',
-    location: { reference: '/samlp:Response/saml:Issuer', action: 'after' }
+    location: { reference: "/*[local-name(.)='Response']/*[local-name(.)='Issuer']", action: 'after' }
   }
 });
 ```

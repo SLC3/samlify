@@ -1,6 +1,6 @@
 {
   "name": "@slc3/samlify",
-  "version": "2.3.8",
+  "version": "2.5.0-rc4",
   "description": "High-level API for Single Sign On (SAML 2.0)",
   "main": "build/index.js",
   "keywords": [
@@ -12,15 +12,16 @@
   ],
   "typings": "types/index.d.ts",
   "scripts": {
-    "build": "npm run lint && tsc",
-    "build:nolint": "tsc",
-    "lint": "tslint --project tsconfig.json",
-    "lint:fix": "tslint --fix --project tsconfig.json",
+    "build": "make rebuild",
+    "docs": "docsify serve -o docs",
+    "lint": "tslint -p .",
+    "lint:fix": "tslint -p . --fix",
     "pretest": "make pretest",
-    "test": "npm run build && nyc ava --verbose build/test",
-    "test:pure": "nyc ava --verbose build/test",
+    "test": "npm run build && NODE_ENV=test nyc ava --verbose build/test",
+    "test:pure": "NODE_ENV=test nyc ava --verbose build/test",
     "coverage": "nyc report --reporter=text-lcov | coveralls",
-    "postinstall": "node postinstall"
+    "preinstall": "make validator",
+    "hooks:postinstall": "ln -sf $PWD/.pre-commit.sh $PWD/.git/hooks/pre-commit"
   },
   "contributors": [
     "Tony Ngan <tonynwk919@gmail.com>"
@@ -32,30 +33,27 @@
   },
   "license": "MIT",
   "dependencies": {
-    "camelcase": "^4.0.0",
+    "@authenio/xml-encryption": "^0.11.2",
+    "camelcase": "^5.2.0",
     "deflate-js": "^0.2.3",
-    "libxml-xsd": "^0.5.2",
-    "lodash": "^4.17.5",
-    "node-forge": "^0.7.4",
+    "node-forge": "^0.7.5",
     "node-rsa": "^0.4.2",
-    "typescript": "^2.7.2",
-    "uuid": "^3.2.1",
+    "uuid": "^3.3.2",
     "xml": "^1.0.0",
-    "xml-crypto": "^0.10.1",
-    "xml-encryption": "tngan/node-xml-encryption",
+    "xml-crypto": "^1.1.4",
     "xmldom": "^0.1.19",
-    "xpath": "0.0.24"
+    "xpath": "^0.0.27"
   },
   "devDependencies": {
-    "@types/camelcase": "^0.0.30",
-    "@types/lodash": "^4.14.104",
-    "@types/node": "^7.0.55",
-    "@types/node-forge": "^0.7.2",
+    "@types/camelcase": "^5.2.0",
+    "@types/node": "^11.11.3",
+    "@types/node-forge": "^0.7.4",
     "@types/uuid": "3.0.0",
     "@types/xmldom": "^0.1.28",
-    "ava": "^0.19.1",
-    "coveralls": "^2.11.16",
-    "nyc": "^11.5.0",
-    "tslint": "5.4.2"
+    "ava": "^1.2.1",
+    "coveralls": "^3.0.2",
+    "nyc": "^11.9.0",
+    "tslint": "^5.12.1",
+    "typescript": "^3.3.3333"
   }
 }

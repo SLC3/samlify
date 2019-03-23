@@ -7,8 +7,7 @@ import Metadata, { MetadataInterface } from './metadata';
 import { MetadataSpConstructor, MetadataSpOptions } from './types';
 import { namespace, elementsOrder as order } from './urn';
 import libsaml from './libsaml';
-import { isString } from 'lodash';
-import { isNonEmptyArray } from './utility';
+import { isNonEmptyArray, isString } from './utility';
 import * as xml from 'xml';
 
 export interface SpMetadataInterface extends MetadataInterface {
@@ -150,13 +149,18 @@ export class SpMetadata extends Metadata {
     }
 
     // Use the re-assigned meta object reference here
-    super(meta as string | Buffer, [{
-      localName: 'SPSSODescriptor',
-      attributes: ['WantAssertionsSigned', 'AuthnRequestsSigned'],
-    }, {
-      localName: 'AssertionConsumerService',
-      attributes: ['Binding', 'Location', 'isDefault', 'index'],
-    }]);
+    super(meta as string | Buffer, [
+      {
+        key: 'spSSODescriptor',
+        localPath: ['EntityDescriptor', 'SPSSODescriptor'],
+        attributes: ['WantAssertionsSigned', 'AuthnRequestsSigned'],
+      },
+      {
+        key: 'assertionConsumerService',
+        localPath: ['EntityDescriptor', 'SPSSODescriptor', 'AssertionConsumerService'],
+        attributes: ['Binding', 'Location', 'isDefault', 'index'],
+      }
+    ]);
 
   }
 
@@ -165,14 +169,14 @@ export class SpMetadata extends Metadata {
   * @return {boolean} Wantassertionssigned
   */
   public isWantAssertionsSigned(): boolean {
-    return this.meta.spssodescriptor.wantassertionssigned === 'true';
+    return this.meta.spSSODescriptor.wantAssertionsSigned === 'true';
   }
   /**
   * @desc Get the preference whether it signs request
   * @return {boolean} Authnrequestssigned
   */
   public isAuthnRequestSigned(): boolean {
-    return this.meta.spssodescriptor.authnrequestssigned === 'true';
+    return this.meta.spSSODescriptor.authnRequestsSigned === 'true';
   }
   /**
   * @desc Get the entity endpoint for assertion consumer service
@@ -183,20 +187,20 @@ export class SpMetadata extends Metadata {
     if (isString(binding)) {
       let location;
       const bindName = namespace.binding[binding];
-      if (isNonEmptyArray(this.meta.assertionconsumerservice)) {
-        this.meta.assertionconsumerservice.forEach(obj => {
+      if (isNonEmptyArray(this.meta.assertionConsumerService)) {
+        this.meta.assertionConsumerService.forEach(obj => {
           if (obj.binding === bindName) {
             location = obj.location;
             return;
           }
         });
       } else {
-        if (this.meta.assertionconsumerservice.binding === bindName) {
-          location = this.meta.assertionconsumerservice.location;
+        if (this.meta.assertionConsumerService.binding === bindName) {
+          location = this.meta.assertionConsumerService.location;
         }
       }
       return location;
     }
-    return this.meta.assertionconsumerservice;
+    return this.meta.assertionConsumerService;
   }
 }

@@ -1,3 +1,5 @@
+import { LoginResponseTemplate } from './libsaml';
+
 export { IdentityProvider as IdentityProviderConstructor } from './entity-idp';
 export { IdpMetadata as IdentityProviderMetadata } from './metadata-idp';
 
@@ -59,8 +61,10 @@ export interface SignatureConfig {
 export interface SAMLDocumentTemplate {
   context?: string;
 }
+
 export interface ServiceProviderSettings {
   metadata?: string | Buffer;
+  entityID?: string;
   authnRequestsSigned?: boolean;
   wantAssertionsSigned?: boolean;
   wantMessageSigned?: boolean;
@@ -75,6 +79,9 @@ export interface ServiceProviderSettings {
   singleLogoutService?: Array<{ Binding: string, Location: string }>;
   signatureConfig?: SignatureConfig;
   loginRequestTemplate?: SAMLDocumentTemplate;
+  logoutRequestTemplate?: SAMLDocumentTemplate;
+  signingCert?: string | Buffer;
+  encryptCert?: string | Buffer;
 }
 
 export interface IdentityProviderSettings {
@@ -84,10 +91,10 @@ export interface IdentityProviderSettings {
   requestSignatureAlgotithm?: string;
 
   /** template of login response */
-  loginResponseTemplate?: { [key: string]: any };
+  loginResponseTemplate?: LoginResponseTemplate;
 
-  /** template of login response */
-  logoutRequestTemplate?: { [key: string]: any };
+  /** template of logout request */
+  logoutRequestTemplate?: SAMLDocumentTemplate;
 
   /** customized function used for generating request ID */
   generateID?: () => string;
@@ -95,8 +102,8 @@ export interface IdentityProviderSettings {
   entityID?: string;
   privateKey?: string | Buffer;
   privateKeyPass?: string;
-  signingCert?: string;
-  encrpytCert?: string; /** todo */
+  signingCert?: string | Buffer;
+  encryptCert?: string | Buffer; /** todo */
   nameIDFormat?: string[];
   singleSignOnService?: Array<{ [key: string]: string }>;
   singleLogoutService?: Array<{ [key: string]: string }>;

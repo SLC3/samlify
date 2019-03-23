@@ -3,15 +3,13 @@
 * @author tngan
 * @desc Binding-level API, declare the functions using Redirect binding
 */
-import utility from './utility';
+import utility, { get } from './utility';
 import libsaml from './libsaml';
-import Entity, { BindingContext } from './entity';
+import { BindingContext } from './entity';
 import { IdentityProvider as Idp } from './entity-idp';
 import { ServiceProvider as Sp } from './entity-sp';
 import * as url from 'url';
-
 import { wording, namespace } from './urn';
-import { get } from 'lodash';
 
 const binding = wording.binding;
 const urlParams = wording.urlParams;
@@ -85,8 +83,8 @@ function loginRequestRedirectURL(entity: { idp: Idp, sp: Sp }, customTagReplacem
     let rawSamlRequest: string;
     if (spSetting.loginRequestTemplate) {
       const info = customTagReplacement(spSetting.loginRequestTemplate);
-      id = get<BindingContext, keyof BindingContext>(info, 'id');
-      rawSamlRequest = get<BindingContext, keyof BindingContext>(info, 'context');
+      id = get(info, 'id', null);
+      rawSamlRequest = get(info, 'context', null);
     } else {
       id = spSetting.generateID();
       rawSamlRequest = libsaml.replaceTagsByValue(libsaml.defaultLoginRequestTemplate.context, {
@@ -112,7 +110,7 @@ function loginRequestRedirectURL(entity: { idp: Idp, sp: Sp }, customTagReplacem
       }),
     };
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_REDIRECT_LOGIN_REQUEST_MISSING_METADATA');
 }
 /**
 * @desc Redirect URL for logout request
@@ -121,29 +119,29 @@ function loginRequestRedirectURL(entity: { idp: Idp, sp: Sp }, customTagReplacem
 * @param  {function} customTagReplacement     used when developers have their own login response template
 * @return {string} redirect URL
 */
-function logoutRequestRedirectURL(user, entity, relayState?: string, customTagReplacement?: (template: string) => BindingContext): BindingContext {
+function logoutRequestRedirectURL(user, entity, relayState?: string, customTagReplacement?: (template: string, tags: object) => BindingContext): BindingContext {
   const metadata = { init: entity.init.entityMeta, target: entity.target.entityMeta };
   const initSetting = entity.init.entitySetting;
-  let id: string = '';
+  let id: string = initSetting.generateID();
   if (metadata && metadata.init && metadata.target) {
     const base = metadata.target.getSingleLogoutService(binding.redirect);
     let rawSamlRequest: string = '';
+    const requiredTags = {
+      ID: id,
+      Destination: base,
+      EntityID: metadata.init.getEntityID(),
+      Issuer: metadata.init.getEntityID(),
+      IssueInstant: new Date().toISOString(),
+      NameIDFormat: namespace.format[initSetting.logoutNameIDFormat] || namespace.format.emailAddress,
+      NameID: user.logoutNameID,
+      SessionIndex: user.sessionIndex,
+    };
     if (initSetting.logoutRequestTemplate) {
-      const info = customTagReplacement(initSetting.logoutRequestTemplate);
-      id = get<BindingContext, keyof BindingContext>(info, 'id');
-      rawSamlRequest = get<BindingContext, keyof BindingContext>(info, 'context');
+      const info = customTagReplacement(initSetting.logoutRequestTemplate, requiredTags);
+      id = get(info, 'id', null);
+      rawSamlRequest = get(info, 'context', null);
     } else {
-      id = initSetting.generateID();
-      rawSamlRequest = libsaml.replaceTagsByValue(libsaml.defaultLogoutRequestTemplate.context, {
-        ID: id,
-        Destination: base,
-        EntityID: metadata.init.getEntityID(),
-        Issuer: metadata.init.getEntityID(),
-        IssueInstant: new Date().toISOString(),
-        NameIDFormat: namespace.format[initSetting.logoutNameIDFormat] || namespace.format.emailAddress,
-        NameID: user.logoutNameID,
-        SessionIndex: user.sessionIndex,
-      } as any);
+      rawSamlRequest = libsaml.replaceTagsByValue(libsaml.defaultLogoutRequestTemplate.context, requiredTags as any);
     }
     return {
       id,
@@ -157,7 +155,7 @@ function logoutRequestRedirectURL(user, entity, relayState?: string, customTagRe
       }),
     };
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_REDIRECT_LOGOUT_REQUEST_MISSING_METADATA');
 }
 /**
 * @desc Redirect URL for logout response
@@ -166,22 +164,20 @@ function logoutRequestRedirectURL(user, entity, relayState?: string, customTagRe
 * @param  {function} customTagReplacement     used when developers have their own login response template
 */
 function logoutResponseRedirectURL(requestInfo: any, entity: any, relayState?: string, customTagReplacement?: (template: string) => BindingContext): BindingContext {
-  let id: string = '';
   const metadata = {
     init: entity.init.entityMeta,
     target: entity.target.entityMeta,
   };
   const initSetting = entity.init.entitySetting;
+  let id: string = initSetting.generateID();
   if (metadata && metadata.init && metadata.target) {
     const base = metadata.target.getSingleLogoutService(binding.redirect);
     let rawSamlResponse: string;
-
     if (initSetting.logoutResponseTemplate) {
       const template = customTagReplacement(initSetting.logoutResponseTemplate);
-      id = get<BindingContext, keyof BindingContext>(template, 'id');
-      rawSamlResponse = get<BindingContext, keyof BindingContext>(template, 'context');
+      id = get(template, 'id', null);
+      rawSamlResponse = get(template, 'context', null);
     } else {
-      id = initSetting.generateID();
       const tvalue: any = {
         ID: id,
         Destination: base,
@@ -190,8 +186,8 @@ function logoutResponseRedirectURL(requestInfo: any, entity: any, relayState?: s
         IssueInstant: new Date().toISOString(),
         StatusCode: namespace.statusCode.success,
       };
-      if (requestInfo && requestInfo.extract && requestInfo.extract.logoutrequest) {
-        tvalue.InResponseTo = requestInfo.extract.logoutrequest.id;
+      if (requestInfo && requestInfo.extract && requestInfo.extract.logoutRequest) {
+        tvalue.InResponseTo = requestInfo.extract.logoutRequest.id;
       }
       rawSamlResponse = libsaml.replaceTagsByValue(libsaml.defaultLogoutResponseTemplate.context, tvalue);
     }
@@ -207,7 +203,7 @@ function logoutResponseRedirectURL(requestInfo: any, entity: any, relayState?: s
       }),
     };
   }
-  throw new Error('Missing declaration of metadata');
+  throw new Error('ERR_GENERATE_REDIRECT_LOGOUT_RESPONSE_MISSING_METADATA');
 }
 
 const redirectBinding = {
